@@ -1,0 +1,155 @@
+<?php
+
+/**
+ * @file
+ * Lookup US amateur radio callsigns using the FCC API.
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function callsign_lookup_permission() {
+  return array(
+    'lookup callsigns' => array(
+      'title' => t('Lookup callsigns'),
+      'description' => t('Provides users the ability to lookup US callsign license details.'),
+    ),
+    'administer callsign lookups' => array(
+      'title' => t('Administer callsign lookups'),
+      'description' => t('Allows users the ability to configure settings related to callsign lookups.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function callsign_lookup_menu() {
+  $items['callsign_lookup'] = array(
+    'menu_name' => 'navigation',
+    'title' => 'Callsign Lookup',
+    'description' => 'Lookup US amateur radio callsigns using the FCC API.',
+    'type' => MENU_NORMAL_ITEM,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('callsign_lookup_form'),
+    'access arguments' => array('lookup callsigns'),
+  );
+  $items['admin/config/services/callsign_lookup'] = array(
+    'title' => 'Callsign Lookup',
+    'description' => 'Configure settings for the callsign lookup functionality.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('callsign_lookup_admin_form'),
+    'access arguments' => array('administer callsign lookups'),
+    'file' => 'callsign_lookup.admin.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Callsign lookup form.
+ */
+function callsign_lookup_form($form, $form_state) {
+  $form['callsign'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Callsign'),
+    '#description' => t('US amateur radio callsign to lookup.'),
+  );
+  $form['callsign_search'] = array(
+    '#type' => 'submit',
+    '#value' => t('Lookup'),
+    '#submit' => array('callsign_lookup_form_submit'),
+  );
+  $form['#validate'] = array('callsign_lookup_form_validate');
+  if (!empty($form_state['lookup_results']) && !is_array($form_state['lookup_results'])) {
+    $form['results_callsign'] = array(
+      '#type' => 'item',
+      '#title' => t('Lookup Results for @callsign', array('@callsign' => check_plain(drupal_strtoupper($form_state['values']['callsign'])))),
+      '#markup' => $form_state['lookup_results'],
+    );
+  }
+  return $form;
+}
+
+/**
+ * Submit callsign lookup.
+ */
+function callsign_lookup_form_submit($form, &$form_state) {
+  $callsign = drupal_strtoupper($form_state['values']['callsign']);
+  $form_state['lookup_results'] = _callsign_lookup_process_results(callsign_lookup_api_call($callsign), $callsign);
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Validate callsign lookup.
+ */
+function callsign_lookup_form_validate($form, &$form_state) {
+  $callsign = $form_state['values']['callsign'];
+  // Make sure that the callsign follows the pattern of a standard US callsign.
+  if (!preg_match('/^[AaWwKkNn][a-zA-Z]?[0-9][a-zA-Z]{1,3}$/', $callsign)) {
+    form_set_error('callsign', t('Enter a US amateur radio callsign.'));
+  }
+}
+
+/**
+ * Query the FCC Licence View API for license info by US amateur radio callsign.
+ *
+ * @param string $callsign
+ *   The callsign being searched.
+ * @return array
+ *   An array containing the JSON results from the FCC API.
+ */
+function callsign_lookup_api_call($callsign) {
+  $query = '?format=json&sortColumn=expiredDate&sortOrder=desc&searchValue=' . $callsign;
+  $request = drupal_http_request(variable_get('callsign_lookup_api_url', 'http://data.fcc.gov/api/license-view/basicSearch/getLicenses') . $query);
+
+  // The FCC may provide us many records so, we want to check for exact matches.
+  if (property_exists($request, 'error')) {
+    drupal_set_message(t('Something went wrong. Please check Callsign Lookup <a href="@settings_link">settings</a> ', array('@settings_link' => 'admin/config/callsign_lookup')), 'error', FALSE);
+    watchdog('callsign_lookup', 'Error message: "@error_msg" Error Code: @error_code', array('@error_msg' => $request->error, '@error_code' => $request->code), WATCHDOG_ERROR, NULL);
+    return;
+  }
+  else {
+    return drupal_json_decode($request->data);
+  }
+}
+
+/**
+ *
+ */
+function _callsign_lookup_process_results($results, $callsign) {
+  if (empty($results['Licenses'])) {
+    drupal_set_message(t('FCC API response: "@api_response"', array('@api_response' => $results['Errors']['Err'][0]['msg'])), 'status', FALSE);
+    watchdog('callsign_lookup', 'FCC API reponse: "@api_response"', array('@api_response' => $results['Errors']['Err'][0]['msg']), WATCHDOG_INFO, NULL);
+    return;
+  }
+  else {
+    // Build the table of results.
+    $licenses = array();
+    $header = array(
+      array('data' => t('Name')),
+      array('data' => t('FRN')),
+      array('data' => t('Category')),
+      array('data' => t('Service')),
+      array('data' => t('Status')),
+      array('data' => t('Expiration')),
+      array('data' => t('LicenseID')),
+    );
+    $rows = array();
+    foreach ($results['Licenses']['License'] as $license) {
+      $license_id_link = l($license['licenseID'], $license['licDetailURL'], array('attributes' => array('target' => '_blank')));
+      if ($license['callsign'] == $callsign) {
+        $rows[] = array(
+          array('data' => check_plain($license['licName'])),
+          array('data' => check_plain($license['frn'])),
+          array('data' => check_plain($license['categoryDesc'])),
+          array('data' => check_plain($license['serviceDesc'])),
+          array('data' => check_plain($license['statusDesc'])),
+          array('data' => check_plain($license['expiredDate'])),
+          array('data' => $license_id_link),
+        );
+      }
+    }
+    return theme('table', array('header' => $header, 'rows' => $rows));
+  }
+}

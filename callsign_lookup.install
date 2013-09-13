@@ -1,0 +1,13 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the callsign_lookup module.
+ */
+
+/**
+ * Implements hook_uninstall().
+ */
+function callsign_lookup_uninstall() {
+  variable_del('callsign_lookup_api_url');
+}

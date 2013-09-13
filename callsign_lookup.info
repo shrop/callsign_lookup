@@ -1,0 +1,6 @@
+name = Callsign Lookup
+description = Lookup US amateur radio callsigns using the FCC API.
+core = 7.x
+
+; Configuration page
+configure = admin/config/services/callsign_lookup
